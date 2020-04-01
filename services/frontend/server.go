@@ -16,11 +16,14 @@
 package frontend
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path"
+	"text/template"
 
 	"github.com/opentracing/opentracing-go"
+	"github.com/uber/jaeger-client-go"
 	"go.uber.org/zap"
 
 	"github.com/signalfx/hotrod_rum/pkg/httperr"
@@ -71,9 +74,43 @@ func (s *Server) Run() error {
 func (s *Server) createServeMux() http.Handler {
 	mux := tracing.NewServeMux(s.tracer)
 	p := path.Join("/", s.basepath)
-	mux.Handle(p, http.StripPrefix(p, http.FileServer(s.assetFS)))
+	mux.Handle(path.Join(p, "/"), http.HandlerFunc(s.index))
 	mux.Handle(path.Join(p, "/dispatch"), http.HandlerFunc(s.dispatch))
 	return mux
+}
+
+func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	tmpl, err := s.getTemplate(ctx, "/index.html")
+
+	tmplCtx := map[string]string{}
+	span := opentracing.SpanFromContext(ctx)
+
+	if spanCtx, ok := span.Context().(jaeger.SpanContext); ok {
+		tmplCtx["traceID"] = spanCtx.TraceID().String()
+	}
+
+	err = tmpl.Execute(w, tmplCtx)
+	if err != nil {
+		s.logger.For(ctx).Error("could not execute template", zap.Error(err))
+		return
+	}
+}
+
+func (s *Server) getTemplate(ctx context.Context, name string) (*template.Template, error) {
+	name, err := FSString(false, name)
+	if err != nil {
+		s.logger.For(ctx).Error("could not find template", zap.Error(err))
+		return nil, err
+	}
+
+	t, err := template.New("").Parse(name)
+	if err != nil {
+		s.logger.For(ctx).Error("could not parse template", zap.Error(err))
+		return nil, err
+	}
+	return t, nil
 }
 
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
